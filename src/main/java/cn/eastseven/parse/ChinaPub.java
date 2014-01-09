@@ -8,12 +8,15 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.jsoup.Jsoup;
+import org.jsoup.helper.StringUtil;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 
+import redis.clients.jedis.Jedis;
 import cn.eastseven.model.Book;
 
+import com.alibaba.fastjson.JSON;
 import com.google.common.collect.Lists;
 
 public class ChinaPub {
@@ -22,15 +25,24 @@ public class ChinaPub {
 	private static final int timeoutMillis = 10000;
 	private static URL url = null;
 	
+	private Jedis jedis = null;
+	
+	public ChinaPub() {
+		this.jedis = new Jedis("10.10.10.177");
+	}
+	
 	public void start() {
-		int num = 4000000;//2964781;
+		List<String> links = Lists.newArrayList();
+		//int num = 100;//2964781;
+		int start = 3768592, end = 3768792;
 		int valid = 1, invalid = 1;
-		for (int index = 0; index < num; index++) {
+		for (int index = start; index < end; index++) {
 			String link = LINK_HEAD + (++index);
 			try {
-				Jsoup.parse(new URL(link), timeoutMillis);
-				//System.out.println(link + ": childNodeSize=" + doc.childNodeSize());
+				Document doc = Jsoup.parse(new URL(link), timeoutMillis);
+				System.out.println(link + ": childNodeSize=" + doc.childNodeSize());
 				valid++;
+				links.add(link);
 			} catch (Exception e) {
 				//e.printStackTrace();
 				invalid++;
@@ -38,6 +50,22 @@ public class ChinaPub {
 			}
 		}
 		System.out.println("有效地址="+valid+"；无效地址="+invalid);
+		
+		for(String link : links) {
+			Book book = convertToBook(link);
+			if(book == null) continue;
+			
+			String key = book.getIsbn();
+			if(StringUtil.isBlank(key)) continue;
+			if(jedis.exists(key)) continue;
+			
+			String value = JSON.toJSONString(book);
+			jedis.set(key, value);
+		}
+		
+		if(jedis.isConnected()) {
+			System.out.println("Redis size: "+jedis.dbSize());
+		}
 	}
 
 	public List<String> getLinks() {
@@ -80,16 +108,22 @@ public class ChinaPub {
 		Book book = new Book();
 		
 		try {
-			
+			System.out.println(link);
 			url = new URL(link);
 			Document doc = Jsoup.parse(url, 1000);
 			
 			Elements proBook = doc.select("div#right > .pro_book");
-			String title = proBook.select(".pro_book > h1").text();
-			String imgSrc = proBook.select(".pro_book > .pro_book_img > dl > dt > a > img").attr("src");
+			String title     = proBook.select(".pro_book > h1").text();
+			String imgSrc    = proBook.select(".pro_book > .pro_book_img > dl > dt > a > img").attr("src");
+			
 			book.setName(title);
 			book.setCoverUrl(imgSrc);
 			System.out.println(title + "\n" + imgSrc);
+			
+			if(StringUtil.isBlank(title) || StringUtil.isBlank(imgSrc)) {
+				System.out.println("警告：\n标题："+title+"<"+link+"> 没有解析到，请检查！");
+				return null;
+			}
 			
 			String price = proBook.select(".pro_buy_intr > ul > li > span").first().text();
 			book.setPrice(price.replaceAll("￥", ""));
